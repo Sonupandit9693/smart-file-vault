@@ -1,6 +1,7 @@
 import React from 'react';
 import { FileUpload } from './components/FileUpload';
 import { FileList } from './components/FileList';
+import { StorageStats } from './components/StorageStats';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from 'react-error-boundary';
 
@@ -65,7 +66,11 @@ function App() {
                   queryClient.invalidateQueries({ queryKey: ['stats'] });
                 }}
               >
-                <div className="bg-white shadow sm:rounded-lg overflow-hidden">
+                {/* Analytics Section */}
+                <StorageStats />
+                
+                {/* File List with Search and Filters */}
+                <div className="bg-white shadow sm:rounded-lg overflow-hidden p-6">
                   <FileList />
                 </div>
               </ErrorBoundary>
