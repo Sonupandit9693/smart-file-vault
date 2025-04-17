@@ -1,0 +1,6 @@
+    volumes:
+      - ./backend:/app
+      - backend_storage:/app/media
+      - backend_static:/app/staticfiles
+      - backend_data:/app/data
+      - backend_data:/app/data
