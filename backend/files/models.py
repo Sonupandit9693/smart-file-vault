@@ -6,6 +6,10 @@ import uuid
 import os
 import hashlib
 import logging
+import tempfile
+import shutil
+from pathlib import Path
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +39,110 @@ class File(models.Model):
         return self.original_filename
 
     def calculate_hash(self):
-        """Calculate and store the SHA-256 hash of the file content"""
-        sha256_hash = hashlib.sha256()
-        with self.file.open('rb') as f:
-            # Read and update hash in chunks to efficiently handle large files
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        self.content_hash = sha256_hash.hexdigest()
-        return self.content_hash
+        """
+        Calculate and store the SHA-256 hash of the file content.
+        Handles large files efficiently with proper error handling.
+        """
+        # Larger chunk size for better performance with big files
+        CHUNK_SIZE = 8192 * 1024  # 8MB chunks for better performance
+        
+        try:
+            sha256_hash = hashlib.sha256()
+            
+            # Make sure the file position is at the beginning
+            self.file.seek(0)
+            
+            try:
+                # Try direct file reading first - most efficient approach
+                with self.file.open('rb') as f:
+                    for byte_block in iter(lambda: f.read(CHUNK_SIZE), b""):
+                        sha256_hash.update(byte_block)
+            except (IOError, OSError) as e:
+                # Fallback: If direct file access fails, try downloading to a temp file
+                logger.warning(f"Direct file access failed for {self.original_filename}, using fallback: {str(e)}")
+                
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    temp_path = temp_file.name
+                    try:
+                        # Copy the file to temporary storage
+                        for chunk in self.file.chunks(CHUNK_SIZE):
+                            temp_file.write(chunk)
+                        temp_file.flush()
+                        
+                        # Calculate hash from the temp file
+                        with open(temp_path, 'rb') as f:
+                            for byte_block in iter(lambda: f.read(CHUNK_SIZE), b""):
+                                sha256_hash.update(byte_block)
+                    finally:
+                        # Clean up temp file
+                        try:
+                            Path(temp_path).unlink(missing_ok=True)
+                        except Exception as ex:
+                            logger.error(f"Failed to remove temp file {temp_path}: {str(ex)}")
+            
+            # Reset file position back to the beginning
+            self.file.seek(0)
+            
+            # Store the calculated hash
+            self.content_hash = sha256_hash.hexdigest()
+            logger.info(f"Calculated hash for {self.original_filename}: {self.content_hash}")
+            return self.content_hash
+            
+        except Exception as e:
+            logger.error(f"Error calculating hash for {self.original_filename}: {str(e)}")
+            # Return a fallback hash to avoid system failure, but log the error
+            fallback_hash = hashlib.sha256(f"{self.original_filename}_{self.size}_{uuid.uuid4()}".encode()).hexdigest()
+            self.content_hash = fallback_hash
+            logger.warning(f"Using fallback hash for {self.original_filename}: {fallback_hash}")
+            return fallback_hash
+    
+    def save(self, *args, **kwargs):
+        """
+        Override the save method to handle content-based deduplication.
+        This ensures files with identical content are properly linked, 
+        even if they have different filenames.
+        """
+        # Check if this is a new file being added (no ID yet)
+        is_new = not self.pk
+        
+        # For new files, check for duplicates by content
+        if is_new and not self.is_duplicate:
+            try:
+                # Calculate the hash if not already done
+                if not self.content_hash:
+                    self.calculate_hash()
+                
+                # Look for existing file with same hash
+                duplicate_of = self.find_duplicate_by_content(self.content_hash)
+                
+                if duplicate_of:
+                    logger.info(f"Found duplicate content: {self.original_filename} matches {duplicate_of.original_filename}")
+                    
+                    # This is a duplicate file - set up the reference
+                    self.reference_file = duplicate_of
+                    self.is_duplicate = True
+                    self.actual_size = 0  # No additional storage used
+                    
+                    # Add detailed log for debugging
+                    logger.debug(f"Duplicate details - New file: {self.original_filename}, " 
+                                f"Original: {duplicate_of.original_filename}, "
+                                f"Content hash: {self.content_hash}")
+                else:
+                    # This is a new unique file
+                    self.is_duplicate = False
+                    self.actual_size = self.size
+                    self.reference_file = None
+                    logger.info(f"New unique file: {self.original_filename} with hash {self.content_hash}")
+            
+            except Exception as e:
+                logger.error(f"Error during duplication check: {str(e)}")
+                # Fallback to conservative approach
+                self.is_duplicate = False
+                self.actual_size = self.size
+                self.reference_file = None
+        
+        # Continue with the normal save
+        super().save(*args, **kwargs)
         
     def delete(self, *args, **kwargs):
         """
@@ -80,10 +180,81 @@ class File(models.Model):
             raise
 
     @classmethod
+    @classmethod
     def find_duplicate(cls, file_hash):
         """Find a file with the same hash if it exists"""
         return cls.objects.filter(content_hash=file_hash, is_duplicate=False).first()
-
+        
+    @classmethod
+    def find_duplicate_by_content(cls, content_hash):
+        """
+        Find a file with the same content hash that's not itself a duplicate.
+        This ensures we always reference the original source file.
+        """
+        if not content_hash:
+            return None
+            
+        return cls.objects.filter(
+            content_hash=content_hash,
+            is_duplicate=False
+        ).order_by('uploaded_at').first()
+        
+    def verify_duplicate_status(self):
+        """
+        Verifies that this file's duplicate status is correct by comparing hashes.
+        Returns True if the verification was successful, False otherwise.
+        """
+        try:
+            # If not marked as duplicate, nothing to verify
+            if not self.is_duplicate or not self.reference_file:
+                return True
+                
+            # Verify content hash matches the reference file
+            reference_hash = self.reference_file.content_hash or self.reference_file.calculate_hash()
+            my_hash = self.content_hash or self.calculate_hash()
+            
+            if my_hash != reference_hash:
+                logger.warning(f"Hash mismatch: File {self.id} has hash {my_hash} but reference {self.reference_file.id} has {reference_hash}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Error verifying duplicate status: {str(e)}")
+            return False
+            
+    @classmethod
+    def recheck_duplicates(cls):
+        """
+        Utility method to recheck all files for duplicate content.
+        Useful for maintenance or if hash calculation logic has been improved.
+        """
+        try:
+            logger.info("Starting system-wide duplicate check")
+            files = cls.objects.all()
+            
+            # First, ensure all files have content hashes
+            for file in files:
+                if not file.content_hash:
+                    try:
+                        file.calculate_hash()
+                        file.save(update_fields=['content_hash'])
+                    except Exception as e:
+                        logger.error(f"Failed to calculate hash for {file.id}: {str(e)}")
+            
+            # Then, check for duplicates
+            unique_hashes = {}
+            for file in files.filter(is_duplicate=False):
+                if file.content_hash in unique_hashes:
+                    # Already have a file with this hash
+                    other_file = unique_hashes[file.content_hash]
+                    logger.info(f"Found duplicates: {file.original_filename} and {other_file.original_filename}")
+                else:
+                    unique_hashes[file.content_hash] = file
+                    
+            logger.info(f"Duplicate check complete. Found {len(files) - len(unique_hashes)} potential duplicates")
+            return True
+        except Exception as e:
+            logger.error(f"Error in recheck_duplicates: {str(e)}")
+            return False
     @property
     def storage_saved(self):
         """Calculate storage space saved if this is a duplicate file"""
