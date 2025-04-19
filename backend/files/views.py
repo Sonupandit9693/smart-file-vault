@@ -148,6 +148,7 @@ class FileViewSet(viewsets.ModelViewSet):
             logger.error(f"Error during file upload: {str(e)}")
             return Response({'error': f'Upload failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+    
     @action(detail=False, methods=['get'])
     def stats(self, request):
         """

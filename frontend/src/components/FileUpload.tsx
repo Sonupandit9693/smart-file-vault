@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { fileService } from '../services/fileService';
 import { 
   CloudArrowUpIcon, 
@@ -85,7 +85,14 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess }) => {
         console.log("All queries invalidated and refetched");
       });
       
+      // Reset selected file state
       setSelectedFile(null);
+      
+      // Reset the file input element
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      
       onUploadSuccess();
     },
     onError: (error: any) => {
@@ -310,6 +317,14 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess }) => {
       // Detailed error handling is done in onError callback
     }
   };
+
+  // Effect to reset file input when upload is successful
+  useEffect(() => {
+    if (uploadResult?.success && fileInputRef.current) {
+      // Ensure file input is reset when upload is successful
+      fileInputRef.current.value = '';
+    }
+  }, [uploadResult]);
 
   return (
     <div className="p-6">
