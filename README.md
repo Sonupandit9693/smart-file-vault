@@ -1,6 +1,6 @@
 # Smart File Vault
 
-A full-stack file management application built with React and Django, designed for efficient file handling and storage. Abnormal File Vault optimizes storage through file deduplication and provides powerful search and filtering capabilities.
+A full-stack file management application built with React and Django, designed for efficient file handling and storage. Smart File Vault optimizes storage through file deduplication and provides powerful search and filtering capabilities.
 
 ## ✨ Key Features
 
@@ -235,8 +235,7 @@ docker-compose ps
 You should see both containers running:
 ```
 NAME                                IMAGE                             COMMAND                  STATUS          PORTS
-abnormal-file-hub-main-backend-1    abnormal-file-hub-main-backend    "./start.sh"             Up              0.0.0.0:8000->8000/tcp
-abnormal-file-hub-main-frontend-1   abnormal-file-hub-main-frontend   "docker-entrypoint.s…"   Up              0.0.0.0:3000->3000/tcp
+ smart-file-hub-main-frontend  smart-file-hub-main-backend    "./start.sh"             Up              0.0.0.0:8000->
 ```
 
 ### 2. Verify API Health
